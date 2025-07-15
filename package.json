@@ -1,0 +1,19 @@
+{
+  "name": "discord-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "poll-bot.js",
+  "scripts": {
+    "start": "node poll-bot.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@dotenvx/dotenvx": "^1.47.6",
+    "discord.js": "^14.21.0",
+    "node-cron": "^4.2.1"
+  }
+}
