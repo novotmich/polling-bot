@@ -50,7 +50,7 @@ async function createWeeklyPoll(){
   if(!channel){console.error('Invalid POLL_CHANNEL_ID or no access');return;}
   const pollId=Date.now().toString(36);
   const poll={id:pollId,options:WEEK_DAYS.map(d=>({base:d,label:d,id:`${d}_${Date.now().toString(36)}`,votes:[],locked:false}))};
-  const msg=await channel.send({content:`📊 **Weekly Availability Poll**\n———————————————\nWhat day(s) work for you this week?\n\n✅ Click buttons to vote.\n↩️ Click again to remove vote.\n🔒 Locks at ${CAP} votes and opens a POD slot.`,components:buildRows(poll)});
+  const msg=await channel.send({content:`📊 **Weekly Availability Poll**\n———————————————\nWhat day(s) work for you this week @everyone?\n\n✅ Click buttons to vote.\n↩️ Click again to remove vote.\n🔒 Locks at ${CAP} votes and another option for POD will open.`,components:buildRows(poll)});
   polls.set(msg.id,poll);
 }
 
@@ -97,7 +97,7 @@ client.on('interactionCreate',async interaction=>{
     if(option.locked&&option.votes.length<CAP){option.locked=false;}
     uiChanged = rebalance(option.base,poll)||uiChanged;
   }else{
-    if(option.locked){await interaction.reply({content:'That option is full (🔒). Choose another slot!',ephemeral:true});return;}
+    if(option.locked){await interaction.reply({content:'That option is full (🔒). Try another POD!',ephemeral:true});return;}
     option.votes.push(user);uiChanged=true;
     if(option.votes.length>=CAP){
       option.locked=true;
