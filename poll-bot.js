@@ -1,6 +1,6 @@
 // Weekly Poll Discord Bot — Button‑Based Rows
 // Author: ChatGPT (OpenAI)
-// Enhanced: auto‑rebalance POD slots + ordinal naming starting at 2nd POD
+// Enhanced: auto‑rebalance POD slots + ordinal naming starting at 2nd POD + custom /poll days
 
 import '@dotenvx/dotenvx/config';
 import {
@@ -45,12 +45,12 @@ function buildRows(poll){
   return rows;
 }
 
-async function createWeeklyPoll(){
+async function createWeeklyPoll(days = WEEK_DAYS){
   const channel=await client.channels.fetch(process.env.POLL_CHANNEL_ID).catch(()=>null);
   if(!channel){console.error('Invalid POLL_CHANNEL_ID or no access');return;}
   const pollId=Date.now().toString(36);
-  const poll={id:pollId,options:WEEK_DAYS.map(d=>({base:d,label:d,id:`${d}_${Date.now().toString(36)}`,votes:[],locked:false}))};
-  const msg=await channel.send({content:`📊 **Weekly Availability Poll**\n———————————————\nWhat day(s) work for you this week @everyone?\n\n✅ Click buttons to vote.\n↩️ Click again to remove vote.\n🔒 Locks at ${CAP} votes and opens option for another POD.`,components:buildRows(poll)});
+  const poll={id:pollId,options:days.map(d=>({base:d,label:d,id:`${d}_${Date.now().toString(36)}`,votes:[],locked:false}))};
+  const msg=await channel.send({content:`📊 **Weekly Availability Poll**\n———————————————\nWhat day(s) work for you @everyone?\n\n✅ Click buttons to vote.\n↩️ Click again to remove vote.\n🔒 Locks at ${CAP} votes and opens another POD.`,components:buildRows(poll)});
   polls.set(msg.id,poll);
 }
 
@@ -71,12 +71,16 @@ function rebalance(base,poll){
   return changed;
 }
 
-client.once('ready',()=>{console.log(`✓ Logged in as ${client.user.tag}`);cron.schedule(CRON_SPEC,createWeeklyPoll,{timezone:TIMEZONE});});
+client.once('ready',()=>{console.log(`✓ Logged in as ${client.user.tag}`);cron.schedule(CRON_SPEC,()=>createWeeklyPoll(),{timezone:TIMEZONE});});
 
 client.on('interactionCreate',async interaction=>{
   if(interaction.isChatInputCommand()&&interaction.commandName==='poll'){
-    await createWeeklyPoll();
-    await interaction.reply({content:'✅ Poll posted.',flags:64});
+    const input = interaction.options.getString('days');
+    const selectedDays = input
+      ? input.split(',').map(s => s.trim()).filter(d => WEEK_DAYS.includes(d))
+      : WEEK_DAYS;
+    await createWeeklyPoll(selectedDays);
+    await interaction.reply({content:`✅ Poll posted for: ${selectedDays.join(', ')}`,flags:64});
     return;
   }
   if(!interaction.isButton())return;
@@ -101,12 +105,12 @@ client.on('interactionCreate',async interaction=>{
     if(option.locked&&option.votes.length<CAP){option.locked=false;}
     changed=rebalance(option.base,poll)||changed;
   }else{
-    if(option.locked){await interaction.reply({content:'That option is full (🔒). Try another POD!',ephemeral:true});return;}
+    if(option.locked){await interaction.reply({content:'That option is full (🔒). Choose another slot!',ephemeral:true});return;}
     option.votes.push(userId);changed=true;
     if(option.votes.length>=CAP){
       option.locked=true;
       const existingPods=poll.options.filter(o=>o.base===option.base&&o.label.includes('POD')).length;
-      const newIndex=existingPods+2; // start at 2nd POD
+      const newIndex=existingPods+2;
       const label=`${option.base} POD ${ordinal(newIndex)}`;
       poll.options.push({
         base:option.base,
@@ -123,7 +127,14 @@ client.on('interactionCreate',async interaction=>{
 
 if(process.argv.includes('--register')){
   const rest=new REST({version:'10'}).setToken(process.env.BOT_TOKEN);
-  const cmd=new SlashCommandBuilder().setName('poll').setDescription('Post a new weekly availability poll');
+  const cmd=new SlashCommandBuilder()
+    .setName('poll')
+    .setDescription('Post a new weekly availability poll')
+    .addStringOption(opt =>
+      opt.setName('days')
+        .setDescription('Comma-separated days (e.g., Monday, Wednesday)')
+        .setRequired(false)
+    );
   rest.put(Routes.applicationCommands(process.env.CLIENT_ID),{body:[cmd.toJSON()]})
     .then(()=>{console.log('✓ Slash command /poll registered');process.exit(0);})
     .catch(console.error);
