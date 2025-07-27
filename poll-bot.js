@@ -58,8 +58,15 @@ async function loadPoll(msgId){
 
 function getCurrentWeekDates(days){
   const today = DateTime.now().setZone(TIMEZONE);
-  const monday = today.startOf('week').plus({ days: 1 });
+  let monday = today.startOf('week').plus({ days: 1 }); // default: current week's Monday
+
+  // If today is Sunday, start from *next* Monday
+  if (today.weekday === 7) {
+    monday = monday.plus({ weeks: 1 });
+  }
+
   const weekNumber = monday.weekNumber;
+
   const mapped = days.map((day) => {
     const offset = WEEK_DAYS.indexOf(day);
     const date = monday.plus({ days: offset });
@@ -69,6 +76,7 @@ function getCurrentWeekDates(days){
       iso: date.toISODate(),
     };
   });
+
   return { weekNumber, options: mapped };
 }
 
