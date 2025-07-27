@@ -58,17 +58,11 @@ async function loadPoll(msgId){
 
 function getCurrentWeekDates(days){
   const today = DateTime.now().setZone(TIMEZONE);
-  let monday = today.startOf('week').plus({ days: 1 }); // default: current week's Monday
-
-  // If today is Sunday, start from *next* Monday
-  if (today.weekday === 7) {
-    monday = monday.plus({ weeks: 1 });
-  }
-
+  const monday = today.set({ weekday: 1 }); // always gets this week's Monday
   const weekNumber = monday.weekNumber;
 
-  const mapped = days.map((day) => {
-    const offset = WEEK_DAYS.indexOf(day);
+  const mapped = days.map(day => {
+    const offset = WEEK_DAYS.indexOf(day); // 0 for Monday, 1 for Tuesday...
     const date = monday.plus({ days: offset });
     return {
       base: day,
@@ -101,7 +95,7 @@ async function createWeeklyPoll(days = WEEK_DAYS){
   };
 
   const msg = await channel.send({
-    content: `📊 **Weekly Availability Poll – Week ${weekNumber}**\n———————————————\nWhat day(s) work for you @everyone?\n\n✅ Click buttons to vote.\n↩️ Click again to remove vote.\n🔒 Locks at ${CAP} votes and opens another POD.`,
+    content: `📊 **Weekly Availability Poll – Week ${weekNumber}**\n———————————————\nWhat day(s) work for you?\n\n✅ Click buttons to vote.\n↩️ Click again to remove vote.\n🔒 Locks at ${CAP} votes and opens another POD.`,
     components: buildRows(poll)
   });
 
