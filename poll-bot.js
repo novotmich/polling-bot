@@ -100,7 +100,7 @@ async function createWeeklyPoll(days = WEEK_DAYS){
   };
 
   const msg = await channel.send({
-    content: `📊 **Weekly Availability Poll – Week ${weekNumber}**\n———————————————\nWhat day(s) work for you?\n\n✅ Click buttons to vote.\n↩️ Click again to remove vote.\n🔒 Locks at ${CAP} votes and opens another POD.`,
+    content: `📊 **@everyone Weekly Availability Poll – Week ${weekNumber}**\n———————————————\nWhat day(s) work for you?\n\n✅ Click buttons to vote.\n↩️ Click again to remove vote.\n🔒 Locks at ${CAP} votes and opens another POD.`,
     components: buildRows(poll)
   });
 
