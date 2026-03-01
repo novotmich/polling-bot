@@ -25,7 +25,16 @@ const WEEK_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'
 const CAP = 4;
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+const pool = new Pool({ 
+  connectionString: process.env.DATABASE_URL, 
+  ssl: { rejectUnauthorized: false },
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000
+});
+
+pool.on('error', (err) => {
+  console.error('PostgreSQL pool error (non-fatal):', err.message);
+});
 
 function ordinal(n){const s=["th","st","nd","rd"],v=n%100;return `${n}${s[(v-20)%10]||s[v]||s[0]}`;}
 
