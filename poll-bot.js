@@ -210,7 +210,16 @@ if(process.argv.includes('--register')){
     .catch(console.error);
 }
 
-client.login(process.env.BOT_TOKEN);
+client.login(process.env.BOT_TOKEN)
+  .then(() => console.log('✓ Discord login successful'))
+  .catch(err => {
+    console.error('✗ Discord login FAILED:', err.message);
+    process.exit(1);
+  });
+
+pool.connect()
+  .then(c => { console.log('✓ PostgreSQL connected'); c.release(); })
+  .catch(err => console.error('✗ PostgreSQL connection FAILED:', err.message));  
 
 // Minimal Express server to prevent Render timeout
 const app = express();
