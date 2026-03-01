@@ -17,6 +17,7 @@ import cron from 'node-cron';
 import process from 'node:process';
 import pkg from 'pg';
 import { DateTime } from 'luxon';
+import https from 'https';
 
 const { Pool } = pkg;
 const TIMEZONE = 'Europe/Bratislava';
@@ -219,11 +220,24 @@ if(process.argv.includes('--register')){
     .catch(console.error);
 }
 
-console.log('BOT_TOKEN present:', !!process.env.BOT_TOKEN, '| length:', process.env.BOT_TOKEN?.length);
+https.get('https://discord.com/api/v10/gateway', (res) => {
+  console.log('Discord gateway reachable, status:', res.statusCode);
+}).on('error', (err) => {
+  console.error('Cannot reach Discord gateway:', err.message);
+});
+
+const loginTimeout = setTimeout(() => {
+  console.error('✗ Discord login TIMED OUT after 15 seconds - possible network issue');
+  process.exit(1);
+}, 15000);
 
 client.login(process.env.BOT_TOKEN)
-  .then(() => console.log('✓ Discord login successful'))
+  .then(() => {
+    clearTimeout(loginTimeout);
+    console.log('✓ Discord login successful');
+  })
   .catch(err => {
+    clearTimeout(loginTimeout);
     console.error('✗ Discord login FAILED:', err.message);
     process.exit(1);
   });
