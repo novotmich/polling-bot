@@ -220,27 +220,30 @@ if(process.argv.includes('--register')){
     .catch(console.error);
 }
 
-https.get('https://discord.com/api/v10/gateway', (res) => {
-  console.log('Discord gateway reachable, status:', res.statusCode);
-}).on('error', (err) => {
-  console.error('Cannot reach Discord gateway:', err.message);
-});
-
-const loginTimeout = setTimeout(() => {
-  console.error('✗ Discord login TIMED OUT after 15 seconds - possible network issue');
-  process.exit(1);
-}, 15000);
-
-client.login(process.env.BOT_TOKEN)
-  .then(() => {
-    clearTimeout(loginTimeout);
-    console.log('✓ Discord login successful');
-  })
-  .catch(err => {
-    clearTimeout(loginTimeout);
-    console.error('✗ Discord login FAILED:', err.message);
-    process.exit(1);
+console.log('Waiting 10s before connecting to Discord...');
+setTimeout(() => {
+  https.get('https://discord.com/api/v10/gateway', (res) => {
+    console.log('Discord gateway reachable, status:', res.statusCode);
+  }).on('error', (err) => {
+    console.error('Cannot reach Discord gateway:', err.message);
   });
+
+  const loginTimeout = setTimeout(() => {
+    console.error('✗ Discord login TIMED OUT after 15 seconds');
+    process.exit(1);
+  }, 15000);
+
+  client.login(process.env.BOT_TOKEN)
+    .then(() => {
+      clearTimeout(loginTimeout);
+      console.log('✓ Discord login successful');
+    })
+    .catch(err => {
+      clearTimeout(loginTimeout);
+      console.error('✗ Discord login FAILED:', err.message);
+      process.exit(1);
+    });
+}, 10000);
 
 pool.connect()
   .then(c => { console.log('✓ PostgreSQL connected'); c.release(); })
