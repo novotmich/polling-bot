@@ -2,7 +2,6 @@
 // Author: ChatGPT (OpenAI)
 // Enhanced: auto‑rebalance POD slots + ordinal naming starting at 2nd POD + persistent polls using PostgreSQL + week number and dates
 
-import '@dotenvx/dotenvx/config';
 import {
   Client,
   GatewayIntentBits,
