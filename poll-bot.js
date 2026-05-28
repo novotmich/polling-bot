@@ -24,6 +24,7 @@ const TIMEZONE = 'Europe/Bratislava';
 const CRON_SPEC = '0 10 * * 0';
 const WEEK_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
 const CAP = 4;
+const ADMIN_USER_ID = process.env.ADMIN_USER_ID;
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const pool = new Pool({ 
@@ -36,6 +37,14 @@ const pool = new Pool({
 pool.on('error', (err) => {
   console.error('PostgreSQL pool error (non-fatal):', err.message);
 });
+
+function isAdmin(interaction){
+  if(!ADMIN_USER_ID){
+    console.warn('ADMIN_USER_ID not set — admin commands are unrestricted!');
+    return true;
+  }
+  return interaction.user.id === ADMIN_USER_ID;
+}
 
 function ordinal(n){const s=["th","st","nd","rd"],v=n%100;return `${n}${s[(v-20)%10]||s[v]||s[0]}`;}
 
@@ -65,9 +74,13 @@ async function loadPoll(msgId){
   return res.rows.length ? res.rows[0].data : null;
 }
 
+async function getActivePoll(){
+  const res = await pool.query('SELECT message_id, data FROM polls LIMIT 1');
+  return res.rows.length ? { msgId: res.rows[0].message_id, poll: res.rows[0].data } : null;
+}
+
 function getCurrentWeekDates(days){
   const today = DateTime.now().setZone(TIMEZONE);
-  // If today is Sunday (weekday = 7), use next day (Monday)
   const isSunday = today.weekday === 7;
   const monday = isSunday
     ? today.plus({ days: 1 }).set({ weekday: 1 })
@@ -92,7 +105,6 @@ async function createWeeklyPoll(days = WEEK_DAYS){
   const channel = await client.channels.fetch(process.env.POLL_CHANNEL_ID).catch(()=>null);
   if(!channel){console.error('Invalid POLL_CHANNEL_ID or no access');return;}
 
-  // 🧹 Delete old polls before creating a new one
   await pool.query('DELETE FROM polls');
 
   const { weekNumber, options } = getCurrentWeekDates(days);
@@ -117,8 +129,8 @@ async function createWeeklyPoll(days = WEEK_DAYS){
 }
 
 function rebalance(base, poll){
-  const original = poll.options.find(o => o.base === base && !o.label.includes('POD'));
-  const pods = poll.options.filter(o => o.base === base && o.label.includes('POD'));
+  const original = poll.options.find(o => o.base === base && !o.label.toLowerCase().includes('pod'));
+  const pods = poll.options.filter(o => o.base === base && o.label.toLowerCase().includes('pod'));
   pods.sort((a, b) => a.created - b.created);
   let changed = false;
   for(const pod of pods){
@@ -142,7 +154,13 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async interaction => {
+
+  // /poll command — admin only
   if(interaction.isChatInputCommand() && interaction.commandName === 'poll'){
+    if(!isAdmin(interaction)){
+      await interaction.reply({ content: '❌ You do not have permission to use this command.', flags: 64 });
+      return;
+    }
     const input = interaction.options.getString('days');
     const selectedDays = input
       ? input.split(',').map(s => s.trim()).filter(d => WEEK_DAYS.includes(d))
@@ -152,12 +170,116 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
+  // /removepod command — admin only
+  if(interaction.isChatInputCommand() && interaction.commandName === 'removepod'){
+    if(!isAdmin(interaction)){
+      await interaction.reply({ content: '❌ You do not have permission to use this command.', flags: 64 });
+      return;
+    }
+
+    const active = await getActivePoll();
+    if(!active){
+      await interaction.reply({ content: '❌ No active poll found.', flags: 64 });
+      return;
+    }
+
+    const { msgId, poll } = active;
+    const pods = poll.options
+      .map((o, i) => ({ ...o, _index: i }))
+      .filter(o => o.label.toLowerCase().includes('pod'));
+
+    if(pods.length === 0){
+      await interaction.reply({ content: '❌ There are no extra pods to remove.', flags: 64 });
+      return;
+    }
+
+    const podNumber = interaction.options.getInteger('number');
+
+    // No number provided — list available pods
+    if(podNumber === null){
+      const list = pods.map((p, i) =>
+        `**${i + 1}.** ${p.label} — ${p.votes.length} vote(s)${p.locked ? ' 🔒' : ''}`
+      ).join('\n');
+      await interaction.reply({
+        content: `📋 **Current extra pods:**\n${list}\n\nUse \`/removepod number:<n>\` to remove one, or \`/clearpods\` to remove all.`,
+        flags: 64
+      });
+      return;
+    }
+
+    if(podNumber < 1 || podNumber > pods.length){
+      await interaction.reply({ content: `❌ Invalid number. Choose between 1 and ${pods.length}.`, flags: 64 });
+      return;
+    }
+
+    const podToRemove = pods[podNumber - 1];
+    poll.options.splice(podToRemove._index, 1);
+    await savePoll(msgId, poll);
+
+    try {
+      const channel = await client.channels.fetch(process.env.POLL_CHANNEL_ID);
+      const msg = await channel.messages.fetch(msgId);
+      await msg.edit({ components: buildRows(poll) });
+    } catch(e) {
+      console.error('Could not update poll message:', e.message);
+    }
+
+    await interaction.reply({
+      content: `✅ Removed pod: **${podToRemove.label}**${podToRemove.votes.length > 0 ? ` (${podToRemove.votes.length} vote(s) removed)` : ''}`,
+      flags: 64
+    });
+    return;
+  }
+
+  // /clearpods command — admin only, removes all pods
+  if(interaction.isChatInputCommand() && interaction.commandName === 'clearpods'){
+    if(!isAdmin(interaction)){
+      await interaction.reply({ content: '❌ You do not have permission to use this command.', flags: 64 });
+      return;
+    }
+
+    const active = await getActivePoll();
+    if(!active){
+      await interaction.reply({ content: '❌ No active poll found.', flags: 64 });
+      return;
+    }
+
+    const { msgId, poll } = active;
+    const podCount = poll.options.filter(o => o.label.toLowerCase().includes('pod')).length;
+
+    if(podCount === 0){
+      await interaction.reply({ content: '❌ There are no extra pods to remove.', flags: 64 });
+      return;
+    }
+
+    // Remove all pods
+    poll.options = poll.options.filter(o => !o.label.toLowerCase().includes('pod'));
+    // Unlock any base options that were locked
+    poll.options.forEach(o => { o.locked = o.votes.length >= CAP; });
+
+    await savePoll(msgId, poll);
+
+    try {
+      const channel = await client.channels.fetch(process.env.POLL_CHANNEL_ID);
+      const msg = await channel.messages.fetch(msgId);
+      await msg.edit({ components: buildRows(poll) });
+    } catch(e) {
+      console.error('Could not update poll message:', e.message);
+    }
+
+    await interaction.reply({
+      content: `✅ Removed all **${podCount}** extra pod(s) from the poll.`,
+      flags: 64
+    });
+    return;
+  }
+
   if(!interaction.isButton()) return;
   const [type, pollId, optId] = interaction.customId.split(':');
-  let poll = await loadPoll(interaction.message.id);
-  if(!poll || poll.id !== pollId) return;
 
   if(type === 'show'){
+    const poll = await loadPoll(interaction.message.id);
+    if(!poll || poll.id !== pollId) return;
     const lines = poll.options.map(o =>
       `**${o.label}** (${o.votes.length}/${CAP}) → ${o.votes.length ? o.votes.map(id => `<@${id}>`).join(', ') : '—'}`
     );
@@ -166,57 +288,93 @@ client.on('interactionCreate', async interaction => {
   }
 
   if(type !== 'vote') return;
-  const option = poll.options.find(o => o.id === optId);
-  if(!option) return;
-  const userId = interaction.user.id;
-  let changed = false;
 
-  if(option.votes.includes(userId)){
-    option.votes = option.votes.filter(id => id !== userId);
-    changed = true;
-    if(option.locked && option.votes.length < CAP) option.locked = false;
-    changed = rebalance(option.base, poll) || changed;
-  } else {
-    if(option.locked){
-      await interaction.reply({ content: 'That option is full (🔒). Choose another slot!', ephemeral: true });
-      return;
-    }
-    option.votes.push(userId);
-    changed = true;
-    if(option.votes.length >= CAP){
-      option.locked = true;
-      const existingPods = poll.options.filter(o => o.base === option.base && o.label.includes('POD')).length;
-      const newIndex = existingPods + 2;
-      const label = `${option.base} ${ordinal(newIndex)} pod`;
-      poll.options.push({
-        base: option.base,
-        label,
-        id: `${option.base}_${Date.now().toString(36)}`,
-        votes: [],
-        locked: false,
-        created: Date.now()
-      });
-    }
-  }
+  const dbClient = await pool.connect();
+  try {
+    await dbClient.query('BEGIN');
+    const res = await dbClient.query('SELECT data FROM polls WHERE message_id = $1 FOR UPDATE', [interaction.message.id]);
+    const poll = res.rows.length ? res.rows[0].data : null;
+    if(!poll || poll.id !== pollId){ await dbClient.query('ROLLBACK'); return; }
 
-  if(changed){
-    await savePoll(interaction.message.id, poll);
-    await interaction.update({ components: buildRows(poll) });
+    const option = poll.options.find(o => o.id === optId);
+    if(!option){ await dbClient.query('ROLLBACK'); return; }
+    const userId = interaction.user.id;
+    let changed = false;
+
+    if(option.votes.includes(userId)){
+      option.votes = option.votes.filter(id => id !== userId);
+      changed = true;
+      if(option.locked && option.votes.length < CAP) option.locked = false;
+      changed = rebalance(option.base, poll) || changed;
+    } else {
+      if(option.locked){
+        await dbClient.query('ROLLBACK');
+        await interaction.reply({ content: 'That option is full (🔒). Choose another slot!', ephemeral: true });
+        return;
+      }
+      option.votes.push(userId);
+      changed = true;
+      if(option.votes.length >= CAP){
+        option.locked = true;
+        const existingPods = poll.options.filter(o => o.base === option.base && o.label.toLowerCase().includes('pod'));
+        if(!existingPods.some(o => !o.locked)){
+          const newIndex = existingPods.length + 2;
+          const label = `${option.base} ${ordinal(newIndex)} pod`;
+          poll.options.push({
+            base: option.base,
+            label,
+            id: `${option.base}_${Date.now().toString(36)}`,
+            votes: [],
+            locked: false,
+            created: Date.now()
+          });
+        }
+      }
+    }
+
+    if(changed){
+      await dbClient.query(
+        'INSERT INTO polls (message_id, data) VALUES ($1, $2) ON CONFLICT (message_id) DO UPDATE SET data = $2',
+        [interaction.message.id, JSON.stringify(poll)]
+      );
+      await dbClient.query('COMMIT');
+      await interaction.update({ components: buildRows(poll) });
+    } else {
+      await dbClient.query('ROLLBACK');
+    }
+  } catch(e) {
+    await dbClient.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    dbClient.release();
   }
 });
 
 if(process.argv.includes('--register')){
   const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
-  const cmd = new SlashCommandBuilder()
-    .setName('poll')
-    .setDescription('Post a new weekly availability poll')
-    .addStringOption(opt =>
-      opt.setName('days')
-        .setDescription('Comma-separated days (e.g., Monday, Wednesday)')
-        .setRequired(false)
-    );
-  rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: [cmd.toJSON()] })
-    .then(() => { console.log('✓ Slash command /poll registered'); process.exit(0); })
+  const commands = [
+    new SlashCommandBuilder()
+      .setName('poll')
+      .setDescription('Post a new weekly availability poll')
+      .addStringOption(opt =>
+        opt.setName('days')
+          .setDescription('Comma-separated days (e.g., Monday, Wednesday)')
+          .setRequired(false)
+      ),
+    new SlashCommandBuilder()
+      .setName('removepod')
+      .setDescription('Remove a specific extra pod from the active poll')
+      .addIntegerOption(opt =>
+        opt.setName('number')
+          .setDescription('Pod number to remove (omit to list available pods)')
+          .setRequired(false)
+      ),
+    new SlashCommandBuilder()
+      .setName('clearpods')
+      .setDescription('Remove all extra pods from the active poll'),
+  ];
+  rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), { body: commands.map(c => c.toJSON()) })
+    .then(() => { console.log('✓ Slash commands registered'); process.exit(0); })
     .catch(console.error);
 }
 
@@ -247,9 +405,9 @@ setTimeout(() => {
 
 pool.connect()
   .then(c => { console.log('✓ PostgreSQL connected'); c.release(); })
-  .catch(err => console.error('✗ PostgreSQL connection FAILED:', err.message));  
+  .catch(err => console.error('✗ PostgreSQL connection FAILED:', err.message));
 
-// Minimal Express server to prevent Render timeout
+// Express server to keep the process alive
 const app = express();
 app.get('/', (req, res) => res.send('✅ Poll bot is running'));
 const PORT = process.env.PORT || 3000;

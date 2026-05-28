@@ -3,3 +3,8 @@
 poll-bot-copy.js
 
 node_modules
+
+.dockerignore
+docker*
+readme.docker.md
+compose.yaml
