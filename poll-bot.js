@@ -13,7 +13,6 @@ import {
   Routes,
 } from 'discord.js';
 import express from 'express';
-import cron from 'node-cron';
 import process from 'node:process';
 import pkg from 'pg';
 import { DateTime } from 'luxon';
@@ -21,7 +20,10 @@ import https from 'https';
 
 const { Pool } = pkg;
 const TIMEZONE = 'Europe/Bratislava';
-const CRON_SPEC = '0 10 * * 0';
+// Weekly poll: Sunday 10:00 local time (Europe/Bratislava, DST-aware)
+const SCHEDULE = { weekday: 7, hour: 10, minute: 0 };
+const SCHEDULE_CHECK_MS = 60 * 1000;
+const CATCH_UP_HOURS = 12; // post a missed poll if the bot comes back within this window
 const WEEK_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
 const CAP = 4;
 const ADMIN_USER_ID = process.env.ADMIN_USER_ID;
@@ -148,9 +150,40 @@ function rebalance(base, poll){
   return changed;
 }
 
+// Most recent scheduled run time (<= now), computed in TIMEZONE so DST shifts are handled
+function lastScheduledRun(){
+  const now = DateTime.now().setZone(TIMEZONE);
+  let run = now.set({ ...SCHEDULE, second: 0, millisecond: 0 });
+  if(run > now) run = run.minus({ weeks: 1 });
+  return run;
+}
+
+let scheduleCheckRunning = false;
+async function checkSchedule(){
+  if(scheduleCheckRunning) return;
+  scheduleCheckRunning = true;
+  try {
+    const due = lastScheduledRun();
+    if(DateTime.now().diff(due, 'hours').hours > CATCH_UP_HOURS) return;
+
+    // Poll ids are Date.now() in base36, so they double as creation timestamps
+    const active = await getActivePoll();
+    const createdAt = active ? parseInt(active.poll.id, 36) : 0;
+    if(createdAt >= due.toMillis()) return;
+
+    console.log(`Posting scheduled weekly poll (due ${due.toISO()})`);
+    await createWeeklyPoll();
+  } catch(e) {
+    console.error('Scheduled poll check failed:', e.message);
+  } finally {
+    scheduleCheckRunning = false;
+  }
+}
+
 client.once('ready', async () => {
   console.log(`✓ Logged in as ${client.user.tag}`);
-  cron.schedule(CRON_SPEC, () => createWeeklyPoll(), { timezone: TIMEZONE });
+  checkSchedule();
+  setInterval(checkSchedule, SCHEDULE_CHECK_MS);
 });
 
 client.on('interactionCreate', async interaction => {
