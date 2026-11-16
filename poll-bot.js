@@ -150,6 +150,62 @@ function rebalance(base, poll){
   return changed;
 }
 
+// Returns an unlocked pod for the given day, creating a new one if all are full
+function ensureOpenPod(base, poll){
+  const pods = poll.options.filter(o => o.base === base && o.label.toLowerCase().includes('pod'));
+  const open = pods.find(o => !o.locked);
+  if(open) return open;
+  const pod = {
+    base,
+    label: `${base} ${ordinal(pods.length + 2)} pod`,
+    id: `${base}_${Date.now().toString(36)}_${poll.options.length}`,
+    votes: [],
+    locked: false,
+    created: Date.now()
+  };
+  poll.options.push(pod);
+  return pod;
+}
+
+// Makes sure a day always has a slot that can be joined; returns the newly created pod (or null)
+function ensureOpenSlot(base, poll){
+  const options = poll.options.filter(o => o.base === base);
+  if(!options.length || options.some(o => !o.locked)) return null;
+  return ensureOpenPod(base, poll);
+}
+
+// Puts a user into the target option; if it is full, its most recent voter is bumped to an open pod.
+// Returns the bumped user id (or null).
+function moveVote(userId, target, poll){
+  poll.options
+    .filter(o => o.base === target.base && o !== target)
+    .forEach(o => {
+      o.votes = o.votes.filter(id => id !== userId);
+      o.locked = o.votes.length >= CAP;
+    });
+
+  let bumped = null;
+  if(target.votes.length >= CAP) bumped = target.votes.pop();
+  target.votes.push(userId);
+  target.locked = target.votes.length >= CAP;
+
+  if(bumped){
+    const pod = ensureOpenPod(target.base, poll);
+    pod.votes.push(bumped);
+    pod.locked = pod.votes.length >= CAP;
+  }
+  ensureOpenSlot(target.base, poll);
+
+  return bumped;
+}
+
+function findOption(poll, query){
+  const q = query.trim().toLowerCase();
+  return poll.options.find(o => o.id === query)
+    || poll.options.find(o => o.label.toLowerCase() === q)
+    || poll.options.find(o => o.base.toLowerCase() === q && !o.label.toLowerCase().includes('pod'));
+}
+
 // Most recent scheduled run time (<= now), computed in TIMEZONE so DST shifts are handled
 function lastScheduledRun(){
   const now = DateTime.now().setZone(TIMEZONE);
@@ -187,6 +243,79 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async interaction => {
+
+  // Autocomplete for /movevote target slot
+  if(interaction.isAutocomplete() && interaction.commandName === 'movevote'){
+    const active = await getActivePoll().catch(() => null);
+    const focused = interaction.options.getFocused().toLowerCase();
+    const choices = (active ? active.poll.options : [])
+      .filter(o => o.label.toLowerCase().includes(focused))
+      .slice(0, 25)
+      .map(o => ({ name: `${o.label} (${o.votes.length}/${CAP})`, value: o.id }));
+    await interaction.respond(choices).catch(() => {});
+    return;
+  }
+
+  // /movevote command — admin only, puts a user into a specific slot
+  if(interaction.isChatInputCommand() && interaction.commandName === 'movevote'){
+    if(!isAdmin(interaction)){
+      await interaction.reply({ content: '❌ You do not have permission to use this command.', flags: 64 });
+      return;
+    }
+
+    const user = interaction.options.getUser('user', true);
+    const to = interaction.options.getString('to', true);
+
+    const dbClient = await pool.connect();
+    let msgId, poll, target, bumped;
+    try {
+      await dbClient.query('BEGIN');
+      const res = await dbClient.query('SELECT message_id, data FROM polls LIMIT 1 FOR UPDATE');
+      if(!res.rows.length){
+        await dbClient.query('ROLLBACK');
+        await interaction.reply({ content: '❌ No active poll found.', flags: 64 });
+        return;
+      }
+      msgId = res.rows[0].message_id;
+      poll = res.rows[0].data;
+
+      target = findOption(poll, to);
+      if(!target){
+        await dbClient.query('ROLLBACK');
+        await interaction.reply({ content: `❌ Slot "${to}" not found. Pick one from the suggestions.`, flags: 64 });
+        return;
+      }
+      if(target.votes.includes(user.id)){
+        await dbClient.query('ROLLBACK');
+        await interaction.reply({ content: `ℹ️ <@${user.id}> is already in **${target.label}**.`, flags: 64 });
+        return;
+      }
+
+      bumped = moveVote(user.id, target, poll);
+      await dbClient.query('UPDATE polls SET data = $2 WHERE message_id = $1', [msgId, JSON.stringify(poll)]);
+      await dbClient.query('COMMIT');
+    } catch(e) {
+      await dbClient.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      dbClient.release();
+    }
+
+    try {
+      const channel = await client.channels.fetch(process.env.POLL_CHANNEL_ID);
+      const msg = await channel.messages.fetch(msgId);
+      await msg.edit({ components: buildRows(poll) });
+    } catch(e) {
+      console.error('Could not update poll message:', e.message);
+    }
+
+    const bumpedPod = bumped && poll.options.find(o => o.base === target.base && o.votes.includes(bumped));
+    await interaction.reply({
+      content: `✅ Moved <@${user.id}> to **${target.label}**${bumpedPod ? `\n↪️ <@${bumped}> was moved to **${bumpedPod.label}**` : ''}`,
+      flags: 64
+    });
+    return;
+  }
 
   // /poll command — admin only
   if(interaction.isChatInputCommand() && interaction.commandName === 'poll'){
@@ -247,6 +376,7 @@ client.on('interactionCreate', async interaction => {
 
     const podToRemove = pods[podNumber - 1];
     poll.options.splice(podToRemove._index, 1);
+    ensureOpenSlot(podToRemove.base, poll);
     await savePoll(msgId, poll);
 
     try {
@@ -289,6 +419,8 @@ client.on('interactionCreate', async interaction => {
     poll.options = poll.options.filter(o => !o.label.toLowerCase().includes('pod'));
     // Unlock any base options that were locked
     poll.options.forEach(o => { o.locked = o.votes.length >= CAP; });
+    // Full days still need one open pod to join
+    poll.options.filter(o => o.locked).forEach(o => ensureOpenSlot(o.base, poll));
 
     await savePoll(msgId, poll);
 
@@ -339,29 +471,28 @@ client.on('interactionCreate', async interaction => {
       changed = true;
       if(option.locked && option.votes.length < CAP) option.locked = false;
       changed = rebalance(option.base, poll) || changed;
+      // Rebalancing can remove the last pod and refill the original slot
+      ensureOpenSlot(option.base, poll);
     } else {
       if(option.locked){
-        await dbClient.query('ROLLBACK');
-        await interaction.reply({ content: 'That option is full (🔒). Choose another slot!', ephemeral: true });
+        // Recover polls where a full day has no open pod left
+        const newPod = ensureOpenSlot(option.base, poll);
+        if(!newPod){
+          await dbClient.query('ROLLBACK');
+          await interaction.reply({ content: 'That option is full (🔒). Choose another slot!', ephemeral: true });
+          return;
+        }
+        await dbClient.query('UPDATE polls SET data = $2 WHERE message_id = $1', [interaction.message.id, JSON.stringify(poll)]);
+        await dbClient.query('COMMIT');
+        await interaction.update({ components: buildRows(poll) });
+        await interaction.followUp({ content: `That option is full (🔒). Opened **${newPod.label}** — click it to join!`, ephemeral: true });
         return;
       }
       option.votes.push(userId);
       changed = true;
       if(option.votes.length >= CAP){
         option.locked = true;
-        const existingPods = poll.options.filter(o => o.base === option.base && o.label.toLowerCase().includes('pod'));
-        if(!existingPods.some(o => !o.locked)){
-          const newIndex = existingPods.length + 2;
-          const label = `${option.base} ${ordinal(newIndex)} pod`;
-          poll.options.push({
-            base: option.base,
-            label,
-            id: `${option.base}_${Date.now().toString(36)}`,
-            votes: [],
-            locked: false,
-            created: Date.now()
-          });
-        }
+        ensureOpenPod(option.base, poll);
       }
     }
 
@@ -405,6 +536,20 @@ if(process.argv.includes('--register')){
     new SlashCommandBuilder()
       .setName('clearpods')
       .setDescription('Remove all extra pods from the active poll'),
+    new SlashCommandBuilder()
+      .setName('movevote')
+      .setDescription('Put a user into a specific slot (bumps the latest voter if full)')
+      .addUserOption(opt =>
+        opt.setName('user')
+          .setDescription('User to move')
+          .setRequired(true)
+      )
+      .addStringOption(opt =>
+        opt.setName('to')
+          .setDescription('Target slot')
+          .setRequired(true)
+          .setAutocomplete(true)
+      ),
   ];
   rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), { body: commands.map(c => c.toJSON()) })
     .then(() => { console.log('✓ Slash commands registered'); process.exit(0); })
