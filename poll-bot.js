@@ -244,8 +244,8 @@ client.once('ready', async () => {
 
 client.on('interactionCreate', async interaction => {
 
-  // Autocomplete for /movevote target slot
-  if(interaction.isAutocomplete() && interaction.commandName === 'movevote'){
+  // Autocomplete for /movevote and /tagpod slot options
+  if(interaction.isAutocomplete() && ['movevote', 'tagpod'].includes(interaction.commandName)){
     const active = await getActivePoll().catch(() => null);
     const focused = interaction.options.getFocused().toLowerCase();
     const choices = (active ? active.poll.options : [])
@@ -253,6 +253,33 @@ client.on('interactionCreate', async interaction => {
       .slice(0, 25)
       .map(o => ({ name: `${o.label} (${o.votes.length}/${CAP})`, value: o.id }));
     await interaction.respond(choices).catch(() => {});
+    return;
+  }
+
+  // /tagpod command — open to everyone, mentions everyone in a slot
+  if(interaction.isChatInputCommand() && interaction.commandName === 'tagpod'){
+    const active = await getActivePoll();
+    if(!active){
+      await interaction.reply({ content: '❌ No active poll found.', flags: 64 });
+      return;
+    }
+
+    const slotQuery = interaction.options.getString('slot', true);
+    const target = findOption(active.poll, slotQuery);
+    if(!target){
+      await interaction.reply({ content: `❌ Slot "${slotQuery}" not found. Pick one from the suggestions.`, flags: 64 });
+      return;
+    }
+    if(!target.votes.length){
+      await interaction.reply({ content: `❌ Nobody has voted for **${target.label}** yet.`, flags: 64 });
+      return;
+    }
+
+    const note = interaction.options.getString('message');
+    await interaction.reply({
+      content: `📣 **${target.label}** (${target.votes.length}/${CAP})\n${target.votes.map(id => `<@${id}>`).join(' ')}${note ? `\n\n${note}` : ''}`,
+      allowedMentions: { users: target.votes }
+    });
     return;
   }
 
@@ -549,6 +576,20 @@ if(process.argv.includes('--register')){
           .setDescription('Target slot')
           .setRequired(true)
           .setAutocomplete(true)
+      ),
+    new SlashCommandBuilder()
+      .setName('tagpod')
+      .setDescription('Mention everyone who voted for a slot')
+      .addStringOption(opt =>
+        opt.setName('slot')
+          .setDescription('Slot to tag')
+          .setRequired(true)
+          .setAutocomplete(true)
+      )
+      .addStringOption(opt =>
+        opt.setName('message')
+          .setDescription('Optional message, e.g. "Starting at 18:00"')
+          .setRequired(false)
       ),
   ];
   rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), { body: commands.map(c => c.toJSON()) })
